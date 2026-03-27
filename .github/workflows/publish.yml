@@ -14,6 +14,7 @@ jobs:
   publish:
     name: Publish npm package
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: read
       id-token: write
@@ -62,6 +63,4 @@ jobs:
         run: npx turbo run pack:dry-run
 
       - name: Publish to npm
-        run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish

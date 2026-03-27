@@ -36,6 +36,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/node": "^22.15.30",
     "@biomejs/biome": "^1.9.4",
     "turbo": "^2.8.1",
     "typescript": "^5.9.3"
