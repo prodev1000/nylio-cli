@@ -1,6 +1,6 @@
 {
   "name": "nylio-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Open-source CLI for the Nylio public API",
   "license": "MIT",
   "type": "module",
@@ -11,7 +11,10 @@
   "bin": {
     "nylio": "dist/index.js"
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+ssh://git@github.com/prodev1000/nylio-cli.git"
@@ -20,7 +23,12 @@
     "url": "https://github.com/prodev1000/nylio-cli/issues"
   },
   "homepage": "https://github.com/prodev1000/nylio-cli",
-  "keywords": ["nylio", "cli", "oauth", "mcp"],
+  "keywords": [
+    "nylio",
+    "cli",
+    "oauth",
+    "mcp"
+  ],
   "publishConfig": {
     "access": "public"
   },
