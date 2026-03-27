@@ -2,9 +2,14 @@
 
 Open-source CLI for the Nylio public API.
 
+Related docs:
+
+- npm package: [nylio-cli](https://www.npmjs.com/package/nylio-cli)
+- monorepo integration note: [`function/docs/nylio-cli.md`](https://github.com/prodev1000/function/blob/main/docs/nylio-cli.md)
+
 ## License
 
-Apache-2.0
+MIT
 
 ## Install
 
@@ -67,6 +72,12 @@ git push origin v0.1.0
 ```
 
 The publish workflow verifies the tag, runs the Turbo pipeline, and publishes to npm.
+
+For local publishing, use:
+
+```bash
+npm run publish:npm
+```
 
 ## Configuration
 

@@ -2,14 +2,14 @@
   "name": "nylio-cli",
   "version": "0.1.0",
   "description": "Open-source CLI for the Nylio public API",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "type": "module",
   "packageManager": "npm@10.9.2",
   "engines": {
     "node": ">=22"
   },
   "bin": {
-    "nylio": "./dist/index.js"
+    "nylio": "dist/index.js"
   },
   "files": ["dist", "README.md"],
   "repository": {
@@ -32,7 +32,7 @@
     "pack:dry-run": "npm pack --dry-run",
     "prepack": "turbo run check:publish-safety build",
     "prepublishOnly": "turbo run check:publish-safety lint typecheck build && npm pack --dry-run",
-    "publish:npm": "npm publish --provenance",
+    "publish:npm": "npm publish",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
