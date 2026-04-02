@@ -82,6 +82,7 @@ type DocumentGetPayload = {
     mimeType: "text/x-nylio-enhanced-markdown";
     format: "nylio_enhanced_markdown";
     target: "body";
+    pageMode: "document" | "pages" | "markdown";
     source?: "projection";
     markdown: string;
   };
@@ -1075,6 +1076,7 @@ const formatDocumentGetText = (payload: DocumentGetPayload) =>
     `title ${payload.document.title}`,
     `updated_at ${payload.document.updatedAt}`,
     `url ${payload.document.url}`,
+    `page_mode ${payload.content.pageMode}`,
     ...(payload.content.source ? [`source ${payload.content.source}`] : []),
     "",
     payload.content.markdown,
