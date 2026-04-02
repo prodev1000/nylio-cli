@@ -4,7 +4,6 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "types": ["node"],
     "strict": true,
     "skipLibCheck": true,
     "noFallthroughCasesInSwitch": true,

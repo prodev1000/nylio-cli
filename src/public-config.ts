@@ -15,9 +15,13 @@ const normalizeBaseUrl = (value: string | undefined): string | null => {
   }
 };
 
-export const DEFAULT_API_BASE_URL = "https://api.nylio.app";
+const DEFAULT_AUTH_BASE_URL =
+  process.env.NODE_ENV === "production" ? "https://api.nylio.app" : "http://localhost:8787";
 
-export const CLI_CLIENT_ID = "nylio-cli";
+export const DEFAULT_API_BASE_URL =
+  normalizeBaseUrl(process.env.BETTER_AUTH_URL) ?? DEFAULT_AUTH_BASE_URL;
+
+export const CLI_CLIENT_ID = process.env.NYLIO_OAUTH_CLI_CLIENT_ID?.trim() || "nylio-cli";
 
 export const PUBLIC_SCOPE = {
   workspaceRead: "workspace:read",

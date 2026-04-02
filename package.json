@@ -28,11 +28,14 @@
     "ci": "turbo run lint typecheck build",
     "check:publish-safety": "node ./scripts/check-publish-safety.mjs",
     "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "build:binary:darwin-arm64": "bun build --compile --target=bun-darwin-arm64 --outfile dist/nylio-darwin-arm64 ./src/index.ts",
+    "build:binary:darwin-x64": "bun build --compile --target=bun-darwin-x64 --outfile dist/nylio-darwin-x64 ./src/index.ts",
     "lint": "biome check package.json README.md src scripts .github/workflows",
     "pack:dry-run": "npm pack --dry-run",
+    "release:artifacts": "node ./scripts/build-release-artifacts.mjs",
     "prepack": "turbo run check:publish-safety build",
     "prepublishOnly": "turbo run check:publish-safety lint typecheck build && npm pack --dry-run",
-    "publish:npm": "npm publish",
+    "publish:npm": "npm publish --provenance",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

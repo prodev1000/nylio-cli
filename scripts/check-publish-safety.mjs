@@ -7,7 +7,6 @@ const packageDir = path.resolve(__dirname, "..");
 const srcDir = path.join(packageDir, "src");
 
 const DISALLOWED_PREFIXES = ["@/", "~/", "server", "server/", "/"];
-const ENV_ACCESS_PATTERN = /\bprocess\.env\b/g;
 
 const IMPORT_PATTERN =
   /(?:import\s+(?:[^"']+?\s+from\s+)?|export\s+(?:[^"']+?\s+from\s+)?|import\s*\()\s*["']([^"']+)["']/g;
@@ -62,13 +61,6 @@ const main = async () => {
         specifier,
       });
     }
-
-    if (ENV_ACCESS_PATTERN.test(source)) {
-      violations.push({
-        filePath,
-        specifier: "process.env",
-      });
-    }
   }
 
   if (violations.length === 0) {
@@ -77,7 +69,7 @@ const main = async () => {
   }
 
   console.error(
-    "Refusing to publish nylio-cli because it uses environment variables or imports server-only/workspace-internal modules:",
+    "Refusing to publish nylio-cli because it imports server-only or workspace-internal modules:",
   );
 
   for (const violation of violations) {

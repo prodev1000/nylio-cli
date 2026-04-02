@@ -1,21 +1,14 @@
 # nylio-cli
 
-Open-source CLI for the Nylio public API.
-
-Related docs:
-
-- npm package: [nylio-cli](https://www.npmjs.com/package/nylio-cli)
-- monorepo integration note: [`function/docs/nylio-cli.md`](https://github.com/prodev1000/function/blob/main/docs/nylio-cli.md)
-
-## License
-
-MIT
+CLI for the Nylio public API.
 
 ## Install
 
 ```bash
 npm install -g nylio-cli
 ```
+
+macOS users can also install a self-contained Bun-compiled binary via Homebrew once a tap formula is published.
 
 ## Commands
 
@@ -27,67 +20,102 @@ nylio login --print-url
 nylio auth status
 nylio whoami
 nylio workspaces list
+nylio documents create --title "Draft"
 nylio documents list --limit 10 --offset 0
 nylio documents get <document-id-or-url>
 nylio documents edit --document <document-id-or-url> --old-string "<oldString>" --new-string "<newString>"
 cat replacement.txt | nylio documents edit --document <document-id-or-url> --old-string "<oldString>" --new-string-stdin
 nylio documents replace --document <document-id-or-url> --markdown "<full-enhanced-markdown-body>"
 cat body.md | nylio documents replace --document <document-id-or-url> --stdin
+nylio documents export <document-id-or-url> --format markdown
 nylio search "query"
 ```
 
-Every command and subcommand supports `--help` with targeted examples.
+Each command and subcommand now supports `--help` with targeted examples, for example:
+
+```bash
+nylio documents get --help
+nylio documents replace --help
+```
 
 ## Build
 
 ```bash
-npm install
-npm run ci
-npm run pack:dry-run
+bun run --cwd packages/nylio-cli check:publish-safety
+bun run --cwd packages/nylio-cli typecheck
+bun run --cwd packages/nylio-cli build
+bun run --cwd packages/nylio-cli pack:dry-run
 ```
 
-The publish safety check rejects:
-
-- imports from server-only or monorepo-internal modules
-- `process.env` usage inside `src`
-
-## CI
-
-GitHub Actions runs:
-
-- `lint`
-- `typecheck`
-- `build`
-- `pack:dry-run`
-
-The workflows run through Turborepo and persist the local `.turbo` cache between CI runs.
+The publish safety check fails if the CLI imports server-only code, workspace-internal aliases, or files outside `packages/nylio-cli/src`.
 
 ## Publish
 
-Push a tag that matches the package version:
+GitHub Actions publishes the package from the `Publish CLI` workflow when you push a tag in the format `nylio-cli-v<version>`, for example:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag nylio-cli-v0.1.0
+git push origin nylio-cli-v0.1.0
 ```
 
-The publish workflow verifies the tag, runs the Turbo pipeline, and publishes to npm.
+That same workflow also creates a GitHub Release for the tag and uploads:
 
-For local publishing, use:
+- `nylio-cli-<version>-darwin-arm64.tar.gz`
+- `nylio-cli-<version>-darwin-x64.tar.gz`
+- `SHA256SUMS`
+- `nylio.rb` for Homebrew
+
+GitHub Releases are the distribution point for the self-contained macOS binaries. Homebrew should point at those release assets.
+
+Manual local publish is also wired:
 
 ```bash
-npm run publish:npm
+bun run --cwd packages/nylio-cli publish:npm
+```
+
+To build the macOS release artifacts locally:
+
+```bash
+bun run --cwd packages/nylio-cli release:artifacts -- --repo prodev1000/function --tag nylio-cli-v0.1.0
+```
+
+That writes the archives, checksums, and a generated Homebrew formula to `packages/nylio-cli/dist/release`.
+
+## Homebrew
+
+The generated `nylio.rb` formula is intended for a tap repo and references the GitHub Release assets for the tagged version.
+
+Recommended setup:
+
+- keep `npm` as the cross-platform install path
+- publish macOS Bun binaries to GitHub Releases
+- maintain a small Homebrew tap repo that contains the generated `nylio.rb`
+
+Once a tap exists, installs look like:
+
+```bash
+brew tap <owner>/<tap-repo>
+brew install nylio
 ```
 
 ## Configuration
 
 - `--api-base-url <url>` overrides the default API origin
+- default output is compact plain text
 - `--json` renders machine-readable JSON output
+- `BETTER_AUTH_URL` sets the default API origin when `--api-base-url` is not passed
+- `NYLIO_OAUTH_CLI_CLIENT_ID` overrides the OAuth client id for custom environments
 
-The default API origin is `https://api.nylio.app`.
+## Agent-friendly usage
+
+- Unknown flags fail fast instead of being ignored.
+- Write commands accept explicit flags instead of requiring positional-only input.
+- `nylio documents replace --stdin` reads the replacement body from stdin.
+- `nylio documents edit --old-string-stdin` and `--new-string-stdin` let you pipe one side of the edit.
+- `--dry-run` previews `documents edit` and `documents replace` requests without sending them.
 
 ## Auth
 
-The CLI uses OAuth 2.1 Authorization Code + PKCE and stores user tokens locally at `~/.config/nylio/auth.json`.
+The CLI uses OAuth 2.1 Authorization Code + PKCE against the Nylio Better Auth issuer and stores user tokens locally at `~/.config/nylio/auth.json`.
 
 Use `nylio login --print-url` if you do not want the CLI to open a browser automatically.

@@ -28,6 +28,98 @@ type CommandContext = {
   publicApiAudience: string;
 };
 
+type ExportPayload = {
+  document: {
+    id: string;
+    title: string;
+    url: string;
+  };
+  export: {
+    format: "markdown" | "docx" | "pdf";
+    mimeType: string;
+    fileName: string;
+    text: string | null;
+    dataBase64: string | null;
+  };
+};
+
+type WorkspaceSummaryPayload = {
+  id: string;
+  kind: "personal" | "organization";
+  name: string;
+  slug: string | null;
+  role: string | null;
+  isCurrent: boolean;
+};
+
+type WorkspacesPayload = {
+  currentWorkspace: WorkspaceSummaryPayload;
+  workspaces: WorkspaceSummaryPayload[];
+};
+
+type DocumentSummaryPayload = {
+  id: string;
+  title: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type DocumentPagePayload = {
+  data: DocumentSummaryPayload[];
+  pageInfo: {
+    nextCursor: string | null;
+    nextOffset: number | null;
+    hasMore: boolean;
+    limit: number;
+    offset: number;
+  };
+};
+
+type DocumentGetPayload = {
+  document: DocumentSummaryPayload;
+  content: {
+    mimeType: "text/x-nylio-enhanced-markdown";
+    format: "nylio_enhanced_markdown";
+    target: "body";
+    source?: "projection";
+    markdown: string;
+  };
+};
+
+type DocumentCreatePayload = {
+  created: true;
+  document: DocumentSummaryPayload;
+};
+
+type DocumentMutationPayload = {
+  applied: boolean;
+  message: string;
+  operation:
+    | {
+        type: "edit";
+        replacements: number;
+      }
+    | {
+        type: "replace";
+      };
+  document: DocumentSummaryPayload;
+};
+
+type SearchPayload = {
+  data: Array<{
+    documentId: string;
+    title: string | null;
+    score: number;
+  }>;
+  pageInfo: {
+    nextOffset: number | null;
+    hasMore: boolean;
+    limit: number;
+    offset: number;
+  };
+};
+
 type OptionValue = string | boolean | undefined;
 
 type ParsedCli = {
@@ -53,10 +145,12 @@ type HelpKey =
   | "workspaces"
   | "workspaces list"
   | "documents"
+  | "documents create"
   | "documents list"
   | "documents get"
   | "documents edit"
   | "documents replace"
+  | "documents export"
   | "search";
 
 const CONFIG_DIR = path.join(os.homedir(), ".config", "nylio");
@@ -74,7 +168,10 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       { name: "auth status", description: "Show current auth state." },
       { name: "whoami", description: "Alias for auth status." },
       { name: "workspaces list", description: "List accessible workspaces." },
-      { name: "documents", description: "List, fetch, edit, or replace documents." },
+      {
+        name: "documents",
+        description: "List, fetch, edit, or replace documents.",
+      },
       { name: "search", description: "Search documents across workspaces." },
     ],
     options: [
@@ -150,15 +247,47 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
     description: "Document commands.",
     usage: ["nylio documents <subcommand> [options]"],
     subcommands: [
+      { name: "create", description: "Create a new personal document." },
       { name: "list", description: "List documents." },
       { name: "get", description: "Fetch a single document by id or URL." },
       { name: "edit", description: "Replace one string in a document." },
       { name: "replace", description: "Replace a document body." },
+      { name: "export", description: "Export one document." },
     ],
     examples: [
       "nylio documents list --limit 10",
+      'nylio documents create --title "Draft"',
       "nylio documents get doc_123",
       "nylio documents replace --document doc_123 --stdin < body.md",
+      "nylio documents export doc_123 --format pdf",
+    ],
+  },
+  "documents create": {
+    description: "Create a new personal document with optional initial enhanced markdown.",
+    usage: [
+      "nylio documents create [--title <title>] [--markdown <markdown>]",
+      "nylio documents create [--title <title>] [--stdin]",
+    ],
+    options: [
+      {
+        flag: "--title <title>",
+        description: "Document title. Defaults to `Untitled document`.",
+      },
+      {
+        flag: "--markdown <markdown>",
+        description: "Initial enhanced markdown body.",
+      },
+      {
+        flag: "--stdin",
+        description: "Read initial enhanced markdown body from stdin.",
+      },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
+    examples: [
+      'nylio documents create --title "Draft"',
+      'nylio documents create --title "Draft" --markdown "# Draft"',
+      'cat body.md | nylio documents create --title "Draft" --stdin',
     ],
   },
   "documents list": {
@@ -171,10 +300,22 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
         flag: "--workspace-scope <scope>",
         description: "Limit results to `personal` or `organization` workspaces.",
       },
-      { flag: "--workspace-slug <slug>", description: "Limit results to one workspace slug." },
-      { flag: "--limit <n>", description: "Maximum number of documents to return." },
-      { flag: "--offset <n>", description: "Offset for offset-based pagination." },
-      { flag: "--cursor <cursor>", description: "Cursor for cursor-based pagination." },
+      {
+        flag: "--workspace-slug <slug>",
+        description: "Limit results to one workspace slug.",
+      },
+      {
+        flag: "--limit <n>",
+        description: "Maximum number of documents to return.",
+      },
+      {
+        flag: "--offset <n>",
+        description: "Offset for offset-based pagination.",
+      },
+      {
+        flag: "--cursor <cursor>",
+        description: "Cursor for cursor-based pagination.",
+      },
       { flag: "--json", description: "Render machine-readable JSON output." },
       { flag: "--api-base-url <url>", description: "Override the API origin." },
     ],
@@ -193,7 +334,10 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
         flag: "--workspace-scope <scope>",
         description: "Override workspace resolution for ambiguous ids.",
       },
-      { flag: "--workspace-slug <slug>", description: "Override workspace resolution." },
+      {
+        flag: "--workspace-slug <slug>",
+        description: "Override workspace resolution.",
+      },
       { flag: "--json", description: "Render machine-readable JSON output." },
       { flag: "--api-base-url <url>", description: "Override the API origin." },
     ],
@@ -210,11 +354,20 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       "nylio documents edit --document <id-or-url> --old-string <value> --new-string-stdin < replacement.txt",
     ],
     options: [
-      { flag: "--document <id-or-url>", description: "Document id or supported Nylio URL." },
+      {
+        flag: "--document <id-or-url>",
+        description: "Document id or supported Nylio URL.",
+      },
       { flag: "--old-string <value>", description: "Text to replace." },
       { flag: "--new-string <value>", description: "Replacement text." },
-      { flag: "--old-string-stdin", description: "Read `oldString` from stdin." },
-      { flag: "--new-string-stdin", description: "Read `newString` from stdin." },
+      {
+        flag: "--old-string-stdin",
+        description: "Read `oldString` from stdin.",
+      },
+      {
+        flag: "--new-string-stdin",
+        description: "Read `newString` from stdin.",
+      },
       {
         flag: "--dry-run",
         description: "Preview the request payload without sending the mutation.",
@@ -236,8 +389,14 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       "nylio documents replace --document <id-or-url> --stdin < body.md",
     ],
     options: [
-      { flag: "--document <id-or-url>", description: "Document id or supported Nylio URL." },
-      { flag: "--markdown <markdown>", description: "Replacement markdown body." },
+      {
+        flag: "--document <id-or-url>",
+        description: "Document id or supported Nylio URL.",
+      },
+      {
+        flag: "--markdown <markdown>",
+        description: "Replacement markdown body.",
+      },
       { flag: "--stdin", description: "Read replacement markdown from stdin." },
       {
         flag: "--dry-run",
@@ -252,6 +411,35 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       "cat body.md | nylio documents replace --document doc_123 --stdin",
     ],
   },
+  "documents export": {
+    description: "Export one document as standard markdown, DOCX, or PDF.",
+    usage: ["nylio documents export <id-or-url> --format markdown|docx|pdf [--output <path>]"],
+    options: [
+      {
+        flag: "--format <format>",
+        description: "Export format: `markdown`, `docx`, or `pdf`.",
+      },
+      {
+        flag: "--output <path>",
+        description: "Write the exported file to this path.",
+      },
+      {
+        flag: "--workspace-scope <scope>",
+        description: "Override workspace resolution for ambiguous ids.",
+      },
+      {
+        flag: "--workspace-slug <slug>",
+        description: "Override workspace resolution.",
+      },
+      { flag: "--json", description: "Render the raw export payload as JSON." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
+    examples: [
+      "nylio documents export doc_123 --format markdown",
+      "nylio documents export doc_123 --format pdf --output ./draft.pdf",
+      "nylio documents export https://app.nylio.app/app/doc/doc_123 --format docx",
+    ],
+  },
   search: {
     description: "Search documents across accessible workspaces.",
     usage: [
@@ -262,8 +450,14 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
         flag: "--workspace-scope <scope>",
         description: "Limit results to `personal` or `organization` workspaces.",
       },
-      { flag: "--workspace-slug <slug>", description: "Limit results to one workspace slug." },
-      { flag: "--limit <n>", description: "Maximum number of results to return." },
+      {
+        flag: "--workspace-slug <slug>",
+        description: "Limit results to one workspace slug.",
+      },
+      {
+        flag: "--limit <n>",
+        description: "Maximum number of results to return.",
+      },
       { flag: "--offset <n>", description: "Offset for pagination." },
       { flag: "--json", description: "Render machine-readable JSON output." },
       { flag: "--api-base-url <url>", description: "Override the API origin." },
@@ -317,6 +511,7 @@ const COMMAND_ALLOWED_OPTIONS: Record<HelpKey, readonly string[]> = {
   workspaces: ["help", "json", "api-base-url"],
   "workspaces list": ["help", "json", "api-base-url"],
   documents: ["help", "json", "api-base-url"],
+  "documents create": ["help", "json", "api-base-url", "title", "markdown", "stdin"],
   "documents list": [
     "help",
     "json",
@@ -340,6 +535,15 @@ const COMMAND_ALLOWED_OPTIONS: Record<HelpKey, readonly string[]> = {
     "dry-run",
   ],
   "documents replace": ["help", "json", "api-base-url", "document", "markdown", "stdin", "dry-run"],
+  "documents export": [
+    "help",
+    "json",
+    "api-base-url",
+    "workspace-scope",
+    "workspace-slug",
+    "format",
+    "output",
+  ],
   search: ["help", "json", "api-base-url", "workspace-scope", "workspace-slug", "limit", "offset"],
 };
 
@@ -349,11 +553,14 @@ const ALL_OPTIONS = {
   "api-base-url": { type: "string" },
   "workspace-scope": { type: "string" },
   "workspace-slug": { type: "string" },
+  title: { type: "string" },
   limit: { type: "string" },
   offset: { type: "string" },
   cursor: { type: "string" },
   document: { type: "string" },
   markdown: { type: "string" },
+  format: { type: "string" },
+  output: { type: "string" },
   stdin: { type: "boolean" },
   "old-string": { type: "string" },
   "new-string": { type: "string" },
@@ -376,8 +583,10 @@ const PUBLIC_SCOPES = [
 
 const decodeJwtExpiry = (token: string): number | null => {
   const parts = token.split(".");
+  if (parts.length < 2) {
+    return null;
+  }
   const payloadPart = parts[1];
-
   if (!payloadPart) {
     return null;
   }
@@ -480,6 +689,10 @@ const resolveHelpKey = (positionals: string[]): HelpKey | null => {
       return "documents list";
     }
 
+    if (subcommand === "create") {
+      return "documents create";
+    }
+
     if (subcommand === "get") {
       return "documents get";
     }
@@ -490,6 +703,10 @@ const resolveHelpKey = (positionals: string[]): HelpKey | null => {
 
     if (subcommand === "replace") {
       return "documents replace";
+    }
+
+    if (subcommand === "export") {
+      return "documents export";
     }
 
     return null;
@@ -726,6 +943,241 @@ const render = (ctx: CommandContext, value: unknown) => {
   console.log(JSON.stringify(value, null, 2));
 };
 
+const renderText = (ctx: CommandContext, text: string, jsonValue?: unknown) => {
+  if (ctx.json) {
+    render(ctx, jsonValue ?? text);
+    return;
+  }
+
+  console.log(text);
+};
+
+const clampCell = (value: string, width: number): string => {
+  if (value.length <= width) {
+    return value;
+  }
+
+  if (width <= 3) {
+    return value.slice(0, width);
+  }
+
+  return `${value.slice(0, width - 3)}...`;
+};
+
+const formatTable = (headers: string[], rows: string[][], maxWidths?: number[]): string => {
+  const widths = headers.map((header, index) => {
+    const longestCell = rows.reduce((max, row) => {
+      const cell = row[index] ?? "";
+      return Math.max(max, cell.length);
+    }, header.length);
+    const cap = maxWidths?.[index];
+    return cap ? Math.min(longestCell, cap) : longestCell;
+  });
+
+  const renderRow = (row: string[]) =>
+    row
+      .map((cell, index) => clampCell(cell ?? "", widths[index] ?? 0))
+      .map((cell, index) => cell.padEnd(widths[index] ?? cell.length))
+      .join("  ")
+      .trimEnd();
+
+  return [renderRow(headers), ...rows.map(renderRow)].join("\n");
+};
+
+const formatOffsetPageInfo = (pageInfo: {
+  hasMore: boolean;
+  limit: number;
+  offset: number;
+  nextOffset: number | null;
+}) => {
+  const lines = [
+    `limit ${pageInfo.limit}`,
+    `offset ${pageInfo.offset}`,
+    `has_more ${pageInfo.hasMore ? "true" : "false"}`,
+  ];
+
+  if (pageInfo.nextOffset !== null) {
+    lines.push(`next_offset ${pageInfo.nextOffset}`);
+  }
+
+  return lines.join("\n");
+};
+
+const formatDocumentPageInfo = (pageInfo: DocumentPagePayload["pageInfo"]) => {
+  const lines = [formatOffsetPageInfo(pageInfo)];
+
+  if (pageInfo.nextCursor) {
+    lines.push(`next_cursor ${pageInfo.nextCursor}`);
+  }
+
+  return lines.join("\n");
+};
+
+const formatLoginText = (value: {
+  status: string;
+  issuer: string;
+  audience: string;
+  expiresAt: string;
+}) =>
+  [
+    `status ${value.status}`,
+    `issuer ${value.issuer}`,
+    `audience ${value.audience}`,
+    `expires_at ${value.expiresAt}`,
+  ].join("\n");
+
+const formatAuthStatusText = (value: {
+  authenticated: boolean;
+  issuer?: string;
+  audience?: string;
+  expiresAt?: string;
+  scope?: string;
+}) => {
+  if (!value.authenticated) {
+    return "authenticated false";
+  }
+
+  return [
+    "authenticated true",
+    `issuer ${value.issuer ?? "-"}`,
+    `audience ${value.audience ?? "-"}`,
+    `expires_at ${value.expiresAt ?? "-"}`,
+    `scope ${value.scope ?? "-"}`,
+  ].join("\n");
+};
+
+const formatWorkspacesText = (payload: WorkspacesPayload) => {
+  const rows = payload.workspaces.map((workspace) => [
+    workspace.isCurrent ? "*" : "",
+    workspace.kind,
+    workspace.slug ?? "-",
+    workspace.role ?? "-",
+    workspace.name,
+  ]);
+  return rows.length > 0
+    ? formatTable(["current", "kind", "slug", "role", "name"], rows, [7, 12, 18, 12, 32])
+    : "(no workspaces)";
+};
+
+const formatDocumentsListText = (payload: DocumentPagePayload) => {
+  const rows = payload.data.map((document) => [document.updatedAt, document.id, document.title]);
+  const table =
+    rows.length > 0
+      ? formatTable(["updated_at", "id", "title"], rows, [24, 28, 64])
+      : "(no documents)";
+
+  return `${table}\n\n${formatDocumentPageInfo(payload.pageInfo)}`;
+};
+
+const formatDocumentGetText = (payload: DocumentGetPayload) =>
+  [
+    `id ${payload.document.id}`,
+    `title ${payload.document.title}`,
+    `updated_at ${payload.document.updatedAt}`,
+    `url ${payload.document.url}`,
+    ...(payload.content.source ? [`source ${payload.content.source}`] : []),
+    "",
+    payload.content.markdown,
+  ].join("\n");
+
+const formatDocumentCreateText = (payload: DocumentCreatePayload) =>
+  [
+    "created true",
+    `id ${payload.document.id}`,
+    `title ${payload.document.title}`,
+    `updated_at ${payload.document.updatedAt}`,
+    `url ${payload.document.url}`,
+  ].join("\n");
+
+const formatDocumentMutationText = (payload: DocumentMutationPayload) => {
+  const lines = [
+    `operation ${payload.operation.type}`,
+    `applied ${payload.applied ? "true" : "false"}`,
+    `id ${payload.document.id}`,
+    `title ${payload.document.title}`,
+    `updated_at ${payload.document.updatedAt}`,
+    `url ${payload.document.url}`,
+    `message ${payload.message}`,
+  ];
+
+  if ("replacements" in payload.operation) {
+    lines.splice(2, 0, `replacements ${payload.operation.replacements}`);
+  }
+
+  return lines.join("\n");
+};
+
+const formatDryRunText = (value: {
+  command: string;
+  endpoint: string;
+  method: string;
+  payload: Record<string, string>;
+}) => {
+  const lines = [
+    "dry_run true",
+    `command ${value.command}`,
+    `method ${value.method}`,
+    `endpoint ${value.endpoint}`,
+  ];
+
+  for (const [key, rawValue] of Object.entries(value.payload)) {
+    const normalized = rawValue.replace(/\s+/g, " ").trim();
+    lines.push(
+      `${key} ${normalized ? clampCell(normalized, 80) : "(empty)"} (${rawValue.length} chars)`,
+    );
+  }
+
+  return lines.join("\n");
+};
+
+const formatExportSummaryText = (payload: {
+  exported: true;
+  format: "markdown" | "docx" | "pdf";
+  path: string;
+  documentId: string;
+}) =>
+  [
+    "exported true",
+    `format ${payload.format}`,
+    `path ${payload.path}`,
+    `document_id ${payload.documentId}`,
+  ].join("\n");
+
+const formatSearchText = (payload: SearchPayload) => {
+  const rows = payload.data.map((result) => [
+    result.score.toFixed(3),
+    result.documentId,
+    result.title ?? "-",
+  ]);
+  const table =
+    rows.length > 0
+      ? formatTable(["score", "document_id", "title"], rows, [8, 28, 64])
+      : "(no results)";
+
+  return `${table}\n\n${formatOffsetPageInfo(payload.pageInfo)}`;
+};
+
+const writeExportOutput = async (args: {
+  payload: ExportPayload;
+  outputPath?: string;
+}) => {
+  const targetPath = args.outputPath ?? args.payload.export.fileName;
+
+  if (args.payload.export.format === "markdown") {
+    const text = args.payload.export.text ?? "";
+    await writeFile(targetPath, text, "utf8");
+    return targetPath;
+  }
+
+  const rawBase64 = args.payload.export.dataBase64;
+  if (!rawBase64) {
+    throw new Error("Export payload did not include binary data.");
+  }
+
+  await writeFile(targetPath, Buffer.from(rawBase64, "base64"));
+  return targetPath;
+};
+
 const login = async (ctx: CommandContext, options: Record<string, OptionValue>) => {
   const codeVerifier = randomBase64Url(48);
   const codeChallenge = sha256Base64Url(codeVerifier);
@@ -789,33 +1241,66 @@ const login = async (ctx: CommandContext, options: Record<string, OptionValue>) 
     resource: ctx.publicApiAudience,
   });
 
-  render(ctx, {
+  const payload = {
     status: "ok",
     issuer: ctx.issuer,
     audience: ctx.publicApiAudience,
     expiresAt: new Date(tokenStore.expiresAt).toISOString(),
-  });
+  };
+
+  renderText(ctx, formatLoginText(payload), payload);
 };
 
 const authStatus = async (ctx: CommandContext) => {
   const tokens = await readTokenStore();
   if (!tokens) {
-    render(ctx, { authenticated: false });
+    const payload = { authenticated: false };
+    renderText(ctx, formatAuthStatusText(payload), payload);
     return;
   }
 
-  render(ctx, {
+  const payload = {
     authenticated: true,
     issuer: ctx.issuer,
     audience: ctx.publicApiAudience,
     expiresAt: new Date(tokens.expiresAt).toISOString(),
     scope: tokens.scope,
-  });
+  };
+
+  renderText(ctx, formatAuthStatusText(payload), payload);
 };
 
 const workspacesList = async (ctx: CommandContext) => {
-  const value = await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/workspaces`);
-  render(ctx, value);
+  const value = (await authorizedFetch(
+    ctx,
+    `${ctx.apiBaseUrl}/api/public/v1/workspaces`,
+  )) as WorkspacesPayload;
+  renderText(ctx, formatWorkspacesText(value), value);
+};
+
+const documentsCreate = async (
+  ctx: CommandContext,
+  args: string[],
+  options: Record<string, OptionValue>,
+) => {
+  const stdinMarkdown = options.stdin === true ? await readStdin() : undefined;
+  const positionalMarkdown = args.join(" ").trim();
+  const markdown = stdinMarkdown ?? getStringOption(options, "markdown") ?? positionalMarkdown;
+  const title = getStringOption(options, "title");
+  const payload = {
+    ...(title ? { title } : {}),
+    ...(markdown ? { markdown } : {}),
+  };
+
+  const result = (await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/documents`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })) as DocumentCreatePayload;
+
+  renderText(ctx, formatDocumentCreateText(result), result);
 };
 
 const documentsList = async (
@@ -840,7 +1325,8 @@ const documentsList = async (
     url.searchParams.set("cursor", options.cursor);
   }
 
-  render(ctx, await authorizedFetch(ctx, url.toString()));
+  const result = (await authorizedFetch(ctx, url.toString())) as DocumentPagePayload;
+  renderText(ctx, formatDocumentsListText(result), result);
 };
 
 const documentsGet = async (
@@ -862,7 +1348,8 @@ const documentsGet = async (
     url.searchParams.set("workspaceSlug", options["workspace-slug"]);
   }
 
-  render(ctx, await authorizedFetch(ctx, url.toString()));
+  const result = (await authorizedFetch(ctx, url.toString())) as DocumentGetPayload;
+  renderText(ctx, formatDocumentGetText(result), result);
 };
 
 const documentsEdit = async (
@@ -889,6 +1376,12 @@ const documentsEdit = async (
       "documents edit",
     );
   }
+  const document =
+    documentRef ??
+    usageError(
+      "Document ID or URL is required. Pass it positionally or with `--document`.",
+      "documents edit",
+    );
 
   const stdinValue = stdinTargets.length === 1 ? await readStdin() : undefined;
   const oldString =
@@ -912,35 +1405,56 @@ const documentsEdit = async (
       "documents edit",
     );
   }
+  const oldStringValue =
+    oldString ??
+    usageError(
+      "Missing `oldString`. Pass `<oldString>`, `--old-string`, or `--old-string-stdin`.",
+      "documents edit",
+    );
+  const newStringValue =
+    newString ??
+    usageError(
+      "Missing `newString`. Pass `<newString>`, `--new-string`, or `--new-string-stdin`.",
+      "documents edit",
+    );
 
   const payload = {
-    document: documentRef,
-    oldString,
-    newString,
+    document,
+    oldString: oldStringValue,
+    newString: newStringValue,
   };
 
   if (options["dry-run"] === true) {
-    render(ctx, {
+    const dryRun = {
       dryRun: true,
       command: "documents edit",
       endpoint: `${ctx.apiBaseUrl}/api/public/v1/documents/edit`,
       method: "POST",
       payload,
       note: "No changes made.",
-    });
+    };
+    renderText(
+      ctx,
+      formatDryRunText({
+        command: dryRun.command,
+        endpoint: dryRun.endpoint,
+        method: dryRun.method,
+        payload: dryRun.payload,
+      }),
+      dryRun,
+    );
     return;
   }
 
-  render(
-    ctx,
-    await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/documents/edit`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    }),
-  );
+  const result = (await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/documents/edit`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })) as DocumentMutationPayload;
+
+  renderText(ctx, formatDocumentMutationText(result), result);
 };
 
 const documentsReplace = async (
@@ -955,6 +1469,12 @@ const documentsReplace = async (
       "documents replace",
     );
   }
+  const document =
+    documentRef ??
+    usageError(
+      "Document ID or URL is required. Pass it positionally or with `--document`.",
+      "documents replace",
+    );
 
   const stdinMarkdown = options.stdin === true ? await readStdin() : undefined;
   const positionalMarkdown =
@@ -967,34 +1487,107 @@ const documentsReplace = async (
       "documents replace",
     );
   }
+  const markdownValue =
+    markdown ??
+    usageError(
+      "Replacement markdown is required. Pass `<markdown>`, `--markdown`, or `--stdin`.",
+      "documents replace",
+    );
 
   const payload = {
-    document: documentRef,
-    markdown,
+    document,
+    markdown: markdownValue,
   };
 
   if (options["dry-run"] === true) {
-    render(ctx, {
+    const dryRun = {
       dryRun: true,
       command: "documents replace",
       endpoint: `${ctx.apiBaseUrl}/api/public/v1/documents/replace`,
       method: "POST",
       payload,
       note: "No changes made.",
-    });
+    };
+    renderText(
+      ctx,
+      formatDryRunText({
+        command: dryRun.command,
+        endpoint: dryRun.endpoint,
+        method: dryRun.method,
+        payload: dryRun.payload,
+      }),
+      dryRun,
+    );
     return;
   }
 
-  render(
-    ctx,
-    await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/documents/replace`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
+  const result = (await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/documents/replace`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })) as DocumentMutationPayload;
+
+  renderText(ctx, formatDocumentMutationText(result), result);
+};
+
+const documentsExport = async (
+  ctx: CommandContext,
+  args: string[],
+  options: Record<string, OptionValue>,
+) => {
+  const documentRef = args[0];
+  if (!documentRef) {
+    usageError("Document ID or URL is required.", "documents export");
+  }
+
+  const format = getStringOption(options, "format");
+  if (format !== "markdown" && format !== "docx" && format !== "pdf") {
+    usageError(
+      "Export format is required and must be one of `markdown`, `docx`, or `pdf`.",
+      "documents export",
+    );
+  }
+
+  const url = new URL(`${ctx.apiBaseUrl}/api/public/v1/documents/export`);
+  if (typeof options["workspace-scope"] === "string") {
+    url.searchParams.set("workspaceScope", options["workspace-scope"]);
+  }
+  if (typeof options["workspace-slug"] === "string") {
+    url.searchParams.set("workspaceSlug", options["workspace-slug"]);
+  }
+
+  const payload = (await authorizedFetch(ctx, url.toString(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      document: documentRef,
+      format,
     }),
-  );
+  })) as ExportPayload;
+
+  if (ctx.json) {
+    render(ctx, payload);
+    return;
+  }
+
+  const outputPath = getStringOption(options, "output");
+  if (payload.export.format === "markdown" && !outputPath) {
+    render(ctx, payload.export.text ?? "");
+    return;
+  }
+
+  const writtenPath = await writeExportOutput({ payload, outputPath });
+  const result = {
+    exported: true as const,
+    format: payload.export.format,
+    path: writtenPath,
+    documentId: payload.document.id,
+  };
+  renderText(ctx, formatExportSummaryText(result), result);
 };
 
 const search = async (
@@ -1022,7 +1615,8 @@ const search = async (
     url.searchParams.set("offset", options.offset);
   }
 
-  render(ctx, await authorizedFetch(ctx, url.toString()));
+  const result = (await authorizedFetch(ctx, url.toString())) as SearchPayload;
+  renderText(ctx, formatSearchText(result), result);
 };
 
 const parseCli = (argv: string[]): ParsedCli => {
@@ -1087,7 +1681,8 @@ const main = async () => {
 
   if (command === "logout") {
     await clearTokenStore();
-    render(ctx, { status: "logged_out" });
+    const payload = { status: "logged_out" };
+    renderText(ctx, "status logged_out", payload);
     return;
   }
 
@@ -1111,6 +1706,11 @@ const main = async () => {
     return;
   }
 
+  if (command === "documents" && subcommand === "create") {
+    await documentsCreate(ctx, rest, options);
+    return;
+  }
+
   if (command === "documents" && subcommand === "get") {
     await documentsGet(ctx, rest, options);
     return;
@@ -1123,6 +1723,11 @@ const main = async () => {
 
   if (command === "documents" && subcommand === "replace") {
     await documentsReplace(ctx, rest, options);
+    return;
+  }
+
+  if (command === "documents" && subcommand === "export") {
+    await documentsExport(ctx, rest, options);
     return;
   }
 
