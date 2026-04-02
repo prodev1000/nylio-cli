@@ -1,6 +1,11 @@
 # nylio-cli
 
-CLI for the Nylio public API.
+Open-source CLI for the Nylio public API.
+
+Related docs:
+
+- npm package: [nylio-cli](https://www.npmjs.com/package/nylio-cli)
+- monorepo integration note: [`function/docs/nylio-cli.md`](https://github.com/prodev1000/function/blob/main/docs/nylio-cli.md)
 
 ## Install
 
@@ -41,13 +46,14 @@ nylio documents replace --help
 ## Build
 
 ```bash
-bun run --cwd packages/nylio-cli check:publish-safety
-bun run --cwd packages/nylio-cli typecheck
-bun run --cwd packages/nylio-cli build
-bun run --cwd packages/nylio-cli pack:dry-run
+npm run check:publish-safety
+npm run lint
+npm run typecheck
+npm run build
+npm pack --dry-run
 ```
 
-The publish safety check fails if the CLI imports server-only code, workspace-internal aliases, or files outside `packages/nylio-cli/src`.
+The publish safety check fails if the CLI imports server-only code, workspace-internal aliases, or files outside `src`.
 
 ## Publish
 
@@ -70,16 +76,16 @@ GitHub Releases are the distribution point for the self-contained macOS binaries
 Manual local publish is also wired:
 
 ```bash
-bun run --cwd packages/nylio-cli publish:npm
+npm run publish:npm
 ```
 
 To build the macOS release artifacts locally:
 
 ```bash
-bun run --cwd packages/nylio-cli release:artifacts -- --repo prodev1000/function --tag nylio-cli-v0.1.0
+npm run release:artifacts -- --repo prodev1000/nylio-cli --tag v0.1.0
 ```
 
-That writes the archives, checksums, and a generated Homebrew formula to `packages/nylio-cli/dist/release`.
+That writes the archives, checksums, and a generated Homebrew formula to `dist/release`.
 
 ## Homebrew
 
@@ -119,3 +125,7 @@ brew install nylio
 The CLI uses OAuth 2.1 Authorization Code + PKCE against the Nylio Better Auth issuer and stores user tokens locally at `~/.config/nylio/auth.json`.
 
 Use `nylio login --print-url` if you do not want the CLI to open a browser automatically.
+
+## License
+
+MIT
