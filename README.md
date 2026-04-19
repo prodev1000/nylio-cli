@@ -28,6 +28,13 @@ nylio workspaces list
 nylio documents create --title "Draft"
 nylio documents list --limit 10 --offset 0
 nylio documents get <document-id-or-url>
+nylio documents import ./draft.docx
+nylio documents import ./notes.md
+nylio documents import ./my-vault
+nylio comments list --document <document-id-or-url>
+nylio comments create --document <document-id-or-url> --text "Please clarify this section."
+nylio comments reply --comment <comment-id> --text "Updated in the latest pass."
+nylio comments resolve --thread <thread-id>
 nylio documents edit --document <document-id-or-url> --old-string "<oldString>" --new-string "<newString>"
 cat replacement.txt | nylio documents edit --document <document-id-or-url> --old-string "<oldString>" --new-string-stdin
 nylio documents replace --document <document-id-or-url> --markdown "<full-enhanced-markdown-body>"
@@ -116,8 +123,11 @@ brew install nylio
 
 - Unknown flags fail fast instead of being ignored.
 - Write commands accept explicit flags instead of requiring positional-only input.
+- `nylio documents import <path>` uploads a local `.docx`, `.odt`, Markdown, text, or Obsidian vault `.zip` file and creates personal documents.
+- Passing a local directory to `nylio documents import` packages it as an Obsidian vault ZIP before upload.
 - `nylio documents replace --stdin` reads the replacement body from stdin.
 - `nylio documents edit --old-string-stdin` and `--new-string-stdin` let you pipe one side of the edit.
+- `nylio comments create --author-mode assistant` and `nylio comments reply --author-mode assistant` post from the user's AI assistant label.
 - `--dry-run` previews `documents edit` and `documents replace` requests without sending them.
 
 ## Auth

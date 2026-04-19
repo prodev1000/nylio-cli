@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import JSZip from "jszip";
 import {
   CLI_CLIENT_ID,
   DEFAULT_API_BASE_URL,
@@ -43,6 +52,20 @@ type ExportPayload = {
   };
 };
 
+type DocumentImportKind = "docx" | "odt" | "markdown" | "text" | "obsidian-vault";
+
+type DocumentImportPayload = {
+  document?: DocumentSummaryPayload;
+  documents: DocumentSummaryPayload[];
+  import: {
+    sourceFileName: string;
+    sourceFileSize: number;
+    title: string | null;
+    importKind: DocumentImportKind;
+    importedCount: number;
+  };
+};
+
 type WorkspaceSummaryPayload = {
   id: string;
   kind: "personal" | "organization";
@@ -60,6 +83,7 @@ type WorkspacesPayload = {
 type DocumentSummaryPayload = {
   id: string;
   title: string;
+  kind: "rich" | "markdown";
   url: string;
   createdAt: string;
   updatedAt: string;
@@ -81,10 +105,21 @@ type DocumentGetPayload = {
   content: {
     mimeType: "text/x-nylio-enhanced-markdown";
     format: "nylio_enhanced_markdown";
-    target: "body";
+    target: string;
     pageMode: "document" | "pages" | "markdown";
     source?: "projection";
     markdown: string;
+  };
+  tabs?: Array<{
+    id: string;
+    title: string;
+    target: string;
+    markdown: string;
+  }>;
+  selectedTab?: {
+    id: string;
+    title: string;
+    target: string;
   };
 };
 
@@ -105,6 +140,47 @@ type DocumentMutationPayload = {
         type: "replace";
       };
   document: DocumentSummaryPayload;
+};
+
+type CommentAuthorPayload = {
+  id: string | null;
+  type: "user" | "assistant";
+  label: string;
+};
+
+type CommentRecordPayload = {
+  id: string;
+  text: string | null;
+  parentId: string | null;
+  threadId: string;
+  depth: number;
+  mentionId: string | null;
+  diffId: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  author: CommentAuthorPayload;
+};
+
+type CommentThreadPayload = {
+  id: string;
+  resolved: boolean;
+  comments: CommentRecordPayload[];
+};
+
+type DocumentCommentsPayload = {
+  document: DocumentSummaryPayload;
+  threads: CommentThreadPayload[];
+};
+
+type CommentMutationPayload = {
+  applied: boolean;
+  message: string;
+  operation: {
+    type: "comment_create" | "comment_reply" | "comment_resolve";
+  };
+  document: DocumentSummaryPayload;
+  thread: CommentThreadPayload;
+  comment?: CommentRecordPayload;
 };
 
 type SearchPayload = {
@@ -128,6 +204,8 @@ type ParsedCli = {
   positionals: string[];
 };
 
+type CommandRegistry = Record<string, readonly string[]>;
+
 type HelpSection = {
   description: string;
   usage: string[];
@@ -149,9 +227,15 @@ type HelpKey =
   | "documents create"
   | "documents list"
   | "documents get"
+  | "documents import"
   | "documents edit"
   | "documents replace"
   | "documents export"
+  | "comments"
+  | "comments list"
+  | "comments create"
+  | "comments reply"
+  | "comments resolve"
   | "search";
 
 const CONFIG_DIR = path.join(os.homedir(), ".config", "nylio");
@@ -171,8 +255,9 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       { name: "workspaces list", description: "List accessible workspaces." },
       {
         name: "documents",
-        description: "List, fetch, edit, or replace documents.",
+        description: "List, fetch, import, edit, or replace documents.",
       },
+      { name: "comments", description: "Read and write document comments." },
       { name: "search", description: "Search documents across workspaces." },
     ],
     options: [
@@ -209,6 +294,11 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
     description: "Authentication helpers.",
     usage: ["nylio auth <subcommand> [options]"],
     subcommands: [{ name: "status", description: "Show current auth state." }],
+    options: [
+      { flag: "--help", description: "Show help for the current command." },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
     examples: ["nylio auth status"],
   },
   "auth status": {
@@ -233,6 +323,11 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
     description: "Workspace commands.",
     usage: ["nylio workspaces <subcommand> [options]"],
     subcommands: [{ name: "list", description: "List accessible workspaces." }],
+    options: [
+      { flag: "--help", description: "Show help for the current command." },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
     examples: ["nylio workspaces list"],
   },
   "workspaces list": {
@@ -251,14 +346,26 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       { name: "create", description: "Create a new personal document." },
       { name: "list", description: "List documents." },
       { name: "get", description: "Fetch a single document by id or URL." },
+      {
+        name: "import",
+        description: "Import a DOCX, ODT, Markdown file, or Obsidian vault.",
+      },
       { name: "edit", description: "Replace one string in a document." },
       { name: "replace", description: "Replace a document body." },
       { name: "export", description: "Export one document." },
+    ],
+    options: [
+      { flag: "--help", description: "Show help for the current command." },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
     ],
     examples: [
       "nylio documents list --limit 10",
       'nylio documents create --title "Draft"',
       "nylio documents get doc_123",
+      "nylio documents import ./draft.docx",
+      "nylio documents import ./notes.md",
+      "nylio documents import ./my-vault",
       "nylio documents replace --document doc_123 --stdin < body.md",
       "nylio documents export doc_123 --format pdf",
     ],
@@ -326,11 +433,18 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
     ],
   },
   "documents get": {
-    description: "Fetch a document by id or supported Nylio URL.",
+    description:
+      "Fetch a document by id or supported Nylio URL. Plain-text output shows the body first and then secondary tabs unless `--tab` is provided.",
     usage: [
       "nylio documents get <id-or-url> [--workspace-scope personal|organization] [--workspace-slug <slug>]",
+      "nylio documents get <id-or-url> --tab <tab-id-or-target>",
     ],
     options: [
+      {
+        flag: "--tab <tab-id-or-target>",
+        description:
+          "Read one secondary tab by tab id or `tab.<id>` target instead of the full body-plus-tabs view.",
+      },
       {
         flag: "--workspace-scope <scope>",
         description: "Override workspace resolution for ambiguous ids.",
@@ -345,6 +459,30 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
     examples: [
       "nylio documents get doc_123",
       "nylio documents get https://app.nylio.app/app/doc/doc_123",
+      "nylio documents get doc_123 --tab appendix",
+    ],
+  },
+  "documents import": {
+    description:
+      "Import one local DOCX, ODT, Markdown, or text file, or import an Obsidian vault ZIP or directory.",
+    usage: [
+      "nylio documents import <path-to-file-or-vault> [--title <title>]",
+    ],
+    options: [
+      {
+        flag: "--title <title>",
+        description:
+          "Optional document title override for single-file imports. Not supported for Obsidian vault imports.",
+      },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
+    examples: [
+      "nylio documents import ./draft.docx",
+      "nylio documents import ./notes.md",
+      "nylio documents import ./vault.zip",
+      "nylio documents import ./my-vault",
+      'nylio documents import "./Quarterly Review.odt" --title "Quarterly Review"',
     ],
   },
   "documents edit": {
@@ -359,8 +497,16 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
         flag: "--document <id-or-url>",
         description: "Document id or supported Nylio URL.",
       },
-      { flag: "--old-string <value>", description: "Text to replace." },
-      { flag: "--new-string <value>", description: "Replacement text." },
+      {
+        flag: "--old-string <value>",
+        description:
+          "Text to replace in the main body. Copy it verbatim from the body section of the latest `documents get` output.",
+      },
+      {
+        flag: "--new-string <value>",
+        description:
+          "Replacement text for the main body. Public CLI edits do not target secondary tabs.",
+      },
       {
         flag: "--old-string-stdin",
         description: "Read `oldString` from stdin.",
@@ -383,7 +529,7 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
     ],
   },
   "documents replace": {
-    description: "Replace the full enhanced-markdown body of a document.",
+    description: "Replace the full main-body markdown of a document.",
     usage: [
       "nylio documents replace <id-or-url> <markdown>",
       "nylio documents replace --document <id-or-url> --markdown <markdown>",
@@ -396,7 +542,8 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       },
       {
         flag: "--markdown <markdown>",
-        description: "Replacement markdown body.",
+        description:
+          "Replacement markdown body for the main body target. Public CLI replace does not target secondary tabs.",
       },
       { flag: "--stdin", description: "Read replacement markdown from stdin." },
       {
@@ -441,6 +588,139 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       "nylio documents export https://app.nylio.app/app/doc/doc_123 --format docx",
     ],
   },
+  comments: {
+    description: "Comment commands.",
+    usage: ["nylio comments <subcommand> [options]"],
+    subcommands: [
+      { name: "list", description: "List comment threads for one document." },
+      { name: "create", description: "Create a top-level comment thread." },
+      { name: "reply", description: "Reply to an existing comment." },
+      {
+        name: "resolve",
+        description: "Resolve or reopen a comment thread.",
+      },
+    ],
+    options: [
+      { flag: "--help", description: "Show help for the current command." },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
+    examples: [
+      "nylio comments list --document doc_123",
+      'nylio comments create --document doc_123 --text "Please clarify the final decision."',
+      'nylio comments reply --comment comment_123 --text "Handled in the latest revision."',
+    ],
+  },
+  "comments list": {
+    description: "List comment threads for one document with compact plain-text output.",
+    usage: ["nylio comments list --document <id-or-url>"],
+    options: [
+      {
+        flag: "--document <id-or-url>",
+        description: "Document id or supported Nylio URL.",
+      },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
+    examples: [
+      "nylio comments list --document doc_123",
+      "nylio comments list --document https://app.nylio.app/app/doc/doc_123",
+    ],
+  },
+  "comments create": {
+    description:
+      "Create one top-level comment thread on a document. Use assistant mode when the comment should appear from the user's AI assistant label instead of the user.",
+    usage: [
+      "nylio comments create --document <id-or-url> --text <text>",
+      "nylio comments create --document <id-or-url> --stdin",
+    ],
+    options: [
+      {
+        flag: "--document <id-or-url>",
+        description: "Document id or supported Nylio URL.",
+      },
+      {
+        flag: "--text <text>",
+        description: "Comment body text.",
+      },
+      {
+        flag: "--stdin",
+        description: "Read comment text from stdin.",
+      },
+      {
+        flag: "--author-mode <mode>",
+        description: "Author mode: `user` or `assistant`.",
+      },
+      {
+        flag: "--author-label <label>",
+        description: "Optional assistant display label. Ignored in `user` mode.",
+      },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
+    examples: [
+      'nylio comments create --document doc_123 --text "Please shorten this section."',
+      'nylio comments create --document doc_123 --text "I summarized the next step below." --author-mode assistant',
+      "cat note.txt | nylio comments create --document doc_123 --stdin --author-mode assistant",
+    ],
+  },
+  "comments reply": {
+    description:
+      "Reply to an existing comment. Use assistant mode when the reply should appear from the user's AI assistant label instead of the user.",
+    usage: [
+      "nylio comments reply --comment <comment-id> --text <text>",
+      "nylio comments reply --comment <comment-id> --stdin",
+    ],
+    options: [
+      {
+        flag: "--comment <comment-id>",
+        description: "Parent comment id to reply to.",
+      },
+      {
+        flag: "--text <text>",
+        description: "Reply body text.",
+      },
+      {
+        flag: "--stdin",
+        description: "Read reply text from stdin.",
+      },
+      {
+        flag: "--author-mode <mode>",
+        description: "Author mode: `user` or `assistant`.",
+      },
+      {
+        flag: "--author-label <label>",
+        description: "Optional assistant display label. Ignored in `user` mode.",
+      },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
+    examples: [
+      'nylio comments reply --comment comment_123 --text "Updated in the latest pass."',
+      'printf "Handled" | nylio comments reply --comment comment_123 --stdin --author-mode assistant',
+    ],
+  },
+  "comments resolve": {
+    description:
+      "Resolve or reopen a comment thread by id. Use `--open` to reopen instead of resolve.",
+    usage: ["nylio comments resolve --thread <thread-id> [--open]"],
+    options: [
+      {
+        flag: "--thread <thread-id>",
+        description: "Comment thread id.",
+      },
+      {
+        flag: "--open",
+        description: "Reopen the thread instead of resolving it.",
+      },
+      { flag: "--json", description: "Render machine-readable JSON output." },
+      { flag: "--api-base-url <url>", description: "Override the API origin." },
+    ],
+    examples: [
+      "nylio comments resolve --thread thread_123",
+      "nylio comments resolve --thread thread_123 --open",
+    ],
+  },
   search: {
     description: "Search documents across accessible workspaces.",
     usage: [
@@ -468,6 +748,17 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
       'nylio search "quarterly review" --workspace-slug my-workspace --limit 5',
     ],
   },
+};
+
+const COMMAND_REGISTRY: CommandRegistry = {
+  login: [],
+  logout: [],
+  auth: ["status"],
+  whoami: [],
+  workspaces: ["list"],
+  documents: ["create", "list", "get", "import", "edit", "replace", "export"],
+  comments: ["list", "create", "reply", "resolve"],
+  search: [],
 };
 
 const ROOT_HELP = (() => {
@@ -523,7 +814,8 @@ const COMMAND_ALLOWED_OPTIONS: Record<HelpKey, readonly string[]> = {
     "offset",
     "cursor",
   ],
-  "documents get": ["help", "json", "api-base-url", "workspace-scope", "workspace-slug"],
+  "documents get": ["help", "json", "api-base-url", "workspace-scope", "workspace-slug", "tab"],
+  "documents import": ["help", "json", "api-base-url", "title"],
   "documents edit": [
     "help",
     "json",
@@ -545,6 +837,29 @@ const COMMAND_ALLOWED_OPTIONS: Record<HelpKey, readonly string[]> = {
     "format",
     "output",
   ],
+  comments: ["help", "json", "api-base-url"],
+  "comments list": ["help", "json", "api-base-url", "document"],
+  "comments create": [
+    "help",
+    "json",
+    "api-base-url",
+    "document",
+    "text",
+    "stdin",
+    "author-mode",
+    "author-label",
+  ],
+  "comments reply": [
+    "help",
+    "json",
+    "api-base-url",
+    "comment",
+    "text",
+    "stdin",
+    "author-mode",
+    "author-label",
+  ],
+  "comments resolve": ["help", "json", "api-base-url", "thread", "open"],
   search: ["help", "json", "api-base-url", "workspace-scope", "workspace-slug", "limit", "offset"],
 };
 
@@ -559,17 +874,148 @@ const ALL_OPTIONS = {
   offset: { type: "string" },
   cursor: { type: "string" },
   document: { type: "string" },
+  comment: { type: "string" },
+  thread: { type: "string" },
   markdown: { type: "string" },
   format: { type: "string" },
   output: { type: "string" },
+  tab: { type: "string" },
   stdin: { type: "boolean" },
+  text: { type: "string" },
+  "author-mode": { type: "string" },
+  "author-label": { type: "string" },
   "old-string": { type: "string" },
   "new-string": { type: "string" },
   "old-string-stdin": { type: "boolean" },
   "new-string-stdin": { type: "boolean" },
   "print-url": { type: "boolean" },
   "dry-run": { type: "boolean" },
+  open: { type: "boolean" },
 } as const;
+
+const levenshteinDistance = (left: string, right: string): number => {
+  if (left === right) {
+    return 0;
+  }
+
+  if (left.length === 0) {
+    return right.length;
+  }
+
+  if (right.length === 0) {
+    return left.length;
+  }
+
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+
+  for (let row = 1; row <= left.length; row += 1) {
+    let diagonal = previous[0] ?? 0;
+    previous[0] = row;
+
+    for (let column = 1; column <= right.length; column += 1) {
+      const current = previous[column] ?? 0;
+      const cost = left[row - 1] === right[column - 1] ? 0 : 1;
+      previous[column] = Math.min((previous[column - 1] ?? 0) + 1, current + 1, diagonal + cost);
+      diagonal = current;
+    }
+  }
+
+  return previous[right.length] ?? Math.max(left.length, right.length);
+};
+
+const findClosestSuggestion = (input: string, candidates: readonly string[]): string | null => {
+  const normalizedInput = input.trim().toLowerCase();
+  if (!normalizedInput) {
+    return null;
+  }
+
+  let bestCandidate: string | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    const distance = levenshteinDistance(normalizedInput, candidate.toLowerCase());
+    if (distance < bestDistance) {
+      bestCandidate = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  if (!bestCandidate) {
+    return null;
+  }
+
+  const threshold = Math.max(2, Math.ceil(bestCandidate.length / 3));
+  return bestDistance <= threshold ? bestCandidate : null;
+};
+
+const formatDidYouMean = (value: string | null): string =>
+  value ? `Did you mean \`${value}\`?` : "";
+
+const buildUnknownCommandError = (positionals: string[]): string => {
+  const [command, subcommand] = positionals;
+  const provided = positionals.join(" ").trim();
+
+  if (!command) {
+    return ROOT_HELP;
+  }
+
+  const knownCommand = COMMAND_REGISTRY[command];
+  if (!knownCommand) {
+    const suggestion = findClosestSuggestion(command, Object.keys(COMMAND_REGISTRY));
+    return [`Unknown command: ${provided}`, formatDidYouMean(suggestion), ROOT_HELP]
+      .filter((line) => line.length > 0)
+      .join("\n\n");
+  }
+
+  if (subcommand && !knownCommand.includes(subcommand)) {
+    const suggestion = findClosestSuggestion(subcommand, knownCommand);
+    return [
+      `Unknown subcommand: ${command} ${subcommand}`,
+      formatDidYouMean(suggestion ? `${command} ${suggestion}` : null),
+      formatHelp(command as HelpKey),
+    ]
+      .filter((line) => line.length > 0)
+      .join("\n\n");
+  }
+
+  return `Unknown command: ${provided}\n\n${ROOT_HELP}`;
+};
+
+const extractCommandWords = (argv: string[]): string[] => {
+  const commandWords: string[] = [];
+
+  for (const token of argv) {
+    if (token.startsWith("-")) {
+      break;
+    }
+
+    commandWords.push(token);
+    if (commandWords.length === 2) {
+      break;
+    }
+  }
+
+  return commandWords;
+};
+
+const buildUnknownOptionError = (argv: string[], optionName: string): string => {
+  const commandWords = extractCommandWords(argv);
+  const helpKey =
+    commandWords[0] === "help"
+      ? resolveHelpKey(commandWords.slice(1))
+      : resolveHelpKey(commandWords);
+  const scopedHelpKey = helpKey ?? "root";
+  const allowedOptions = COMMAND_ALLOWED_OPTIONS[scopedHelpKey].map((option) => `--${option}`);
+  const suggestion = findClosestSuggestion(`--${optionName}`, allowedOptions);
+
+  return [
+    `Unknown option \`--${optionName}\` for \`${scopedHelpKey}\`.`,
+    formatDidYouMean(suggestion),
+    formatHelp(scopedHelpKey),
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n\n");
+};
 
 const PUBLIC_SCOPES = [
   "openid",
@@ -698,6 +1144,10 @@ const resolveHelpKey = (positionals: string[]): HelpKey | null => {
       return "documents get";
     }
 
+    if (subcommand === "import") {
+      return "documents import";
+    }
+
     if (subcommand === "edit") {
       return "documents edit";
     }
@@ -708,6 +1158,30 @@ const resolveHelpKey = (positionals: string[]): HelpKey | null => {
 
     if (subcommand === "export") {
       return "documents export";
+    }
+
+    return null;
+  }
+
+  if (command === "comments") {
+    if (!subcommand) {
+      return "comments";
+    }
+
+    if (subcommand === "list") {
+      return "comments list";
+    }
+
+    if (subcommand === "create") {
+      return "comments create";
+    }
+
+    if (subcommand === "reply") {
+      return "comments reply";
+    }
+
+    if (subcommand === "resolve") {
+      return "comments resolve";
     }
 
     return null;
@@ -1076,10 +1550,17 @@ const formatDocumentGetText = (payload: DocumentGetPayload) =>
     `title ${payload.document.title}`,
     `updated_at ${payload.document.updatedAt}`,
     `url ${payload.document.url}`,
+    `target ${payload.content.target}`,
     `page_mode ${payload.content.pageMode}`,
+    ...(payload.selectedTab ? [`tab_name ${payload.selectedTab.title}`] : []),
     ...(payload.content.source ? [`source ${payload.content.source}`] : []),
     "",
     payload.content.markdown,
+    ...(payload.tabs ?? []).flatMap((tab, index) => [
+      "",
+      `---------- tab ${index + 1} name: ${tab.title} -----------`,
+      tab.markdown,
+    ]),
   ].join("\n");
 
 const formatDocumentCreateText = (payload: DocumentCreatePayload) =>
@@ -1090,6 +1571,42 @@ const formatDocumentCreateText = (payload: DocumentCreatePayload) =>
     `updated_at ${payload.document.updatedAt}`,
     `url ${payload.document.url}`,
   ].join("\n");
+
+const formatDocumentImportText = (payload: DocumentImportPayload) =>
+  payload.documents.length === 1 && payload.document
+    ? [
+        "imported true",
+        `import_kind ${payload.import.importKind}`,
+        `imported_count ${payload.import.importedCount}`,
+        `id ${payload.document.id}`,
+        `title ${payload.document.title}`,
+        `kind ${payload.document.kind}`,
+        `updated_at ${payload.document.updatedAt}`,
+        `url ${payload.document.url}`,
+        `source_file ${payload.import.sourceFileName}`,
+        `source_size ${payload.import.sourceFileSize}`,
+      ].join("\n")
+    : [
+        "imported true",
+        `import_kind ${payload.import.importKind}`,
+        `imported_count ${payload.import.importedCount}`,
+        `source_file ${payload.import.sourceFileName}`,
+        `source_size ${payload.import.sourceFileSize}`,
+        "",
+        ...(payload.documents.length > 0
+          ? [
+              formatTable(
+                ["id", "kind", "title"],
+                payload.documents.map((document) => [
+                  document.id,
+                  document.kind,
+                  document.title,
+                ]),
+                [28, 12, 64],
+              ),
+            ]
+          : ["(no documents imported)"]),
+      ].join("\n");
 
 const formatDocumentMutationText = (payload: DocumentMutationPayload) => {
   const lines = [
@@ -1105,6 +1622,48 @@ const formatDocumentMutationText = (payload: DocumentMutationPayload) => {
   if ("replacements" in payload.operation) {
     lines.splice(2, 0, `replacements ${payload.operation.replacements}`);
   }
+
+  return lines.join("\n");
+};
+
+const formatCommentsListText = (payload: DocumentCommentsPayload) =>
+  [
+    `id ${payload.document.id}`,
+    `title ${payload.document.title}`,
+    `url ${payload.document.url}`,
+    "",
+    ...(payload.threads.length === 0
+      ? ["(no comments)"]
+      : payload.threads.flatMap((thread, index) => [
+          `thread ${index + 1} ${thread.id} resolved=${thread.resolved ? "true" : "false"}`,
+          ...thread.comments.map((comment) => {
+            const indent = "  ".repeat(comment.depth);
+            const body = comment.text?.trim() || "(empty)";
+            return `${indent}- ${comment.author.label}: ${body}`;
+          }),
+          "",
+        ])),
+  ]
+    .join("\n")
+    .trimEnd();
+
+const formatCommentMutationText = (payload: CommentMutationPayload) => {
+  const lines = [
+    `operation ${payload.operation.type}`,
+    `applied ${payload.applied ? "true" : "false"}`,
+    `document_id ${payload.document.id}`,
+    `title ${payload.document.title}`,
+    `updated_at ${payload.document.updatedAt}`,
+    `url ${payload.document.url}`,
+    `thread_id ${payload.thread.id}`,
+  ];
+
+  if (payload.comment) {
+    lines.push(`comment_id ${payload.comment.id}`);
+    lines.push(`author ${payload.comment.author.label}`);
+  }
+
+  lines.push(`message ${payload.message}`);
 
   return lines.join("\n");
 };
@@ -1157,6 +1716,94 @@ const formatSearchText = (payload: SearchPayload) => {
       : "(no results)";
 
   return `${table}\n\n${formatOffsetPageInfo(payload.pageInfo)}`;
+};
+
+const parseAuthorMode = (value: string | undefined): "user" | "assistant" => {
+  if (value === undefined || value === "user") {
+    return "user";
+  }
+
+  if (value === "assistant") {
+    return "assistant";
+  }
+
+  throw new Error("Author mode must be `user` or `assistant`.");
+};
+
+const getImportMimeType = (filePath: string): string | undefined => {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".docx") {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+  if (extension === ".odt") {
+    return "application/vnd.oasis.opendocument.text";
+  }
+  if (
+    extension === ".md" ||
+    extension === ".markdown" ||
+    extension === ".mdown" ||
+    extension === ".mkd" ||
+    extension === ".mkdn"
+  ) {
+    return "text/markdown";
+  }
+  if (extension === ".txt") {
+    return "text/plain";
+  }
+  if (extension === ".zip") {
+    return "application/zip";
+  }
+
+  return undefined;
+};
+
+const normalizeVaultZipPath = (value: string) => value.split(path.sep).join("/");
+
+const zipVaultDirectory = async (
+  directoryPath: string,
+): Promise<{ bytes: Buffer; fileName: string }> => {
+  const zip = new JSZip();
+
+  const addDirectory = async (currentPath: string, relativePath: string) => {
+    const entries = await readdir(currentPath, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+
+    for (const entry of entries) {
+      const absoluteChildPath = path.join(currentPath, entry.name);
+      const relativeChildPath = relativePath
+        ? path.join(relativePath, entry.name)
+        : entry.name;
+
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        await addDirectory(absoluteChildPath, relativeChildPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      zip.file(
+        normalizeVaultZipPath(relativeChildPath),
+        await readFile(absoluteChildPath),
+      );
+    }
+  };
+
+  await addDirectory(directoryPath, "");
+
+  return {
+    bytes: await zip.generateAsync({
+      type: "nodebuffer",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 },
+    }),
+    fileName: `${path.basename(directoryPath)}.zip`,
+  };
 };
 
 const writeExportOutput = async (args: {
@@ -1343,6 +1990,9 @@ const documentsGet = async (
 
   const documentId = resolveDocumentRef(documentRef);
   const url = new URL(`${ctx.apiBaseUrl}/api/public/v1/documents/${documentId}`);
+  if (typeof options.tab === "string") {
+    url.searchParams.set("tab", options.tab);
+  }
   if (typeof options["workspace-scope"] === "string") {
     url.searchParams.set("workspaceScope", options["workspace-scope"]);
   }
@@ -1352,6 +2002,202 @@ const documentsGet = async (
 
   const result = (await authorizedFetch(ctx, url.toString())) as DocumentGetPayload;
   renderText(ctx, formatDocumentGetText(result), result);
+};
+
+const documentsImport = async (
+  ctx: CommandContext,
+  args: string[],
+  options: Record<string, OptionValue>,
+) => {
+  const sourcePath = args.join(" ").trim();
+  if (!sourcePath) {
+    usageError("File or directory path is required.", "documents import");
+  }
+
+  const resolvedPath = path.resolve(sourcePath);
+  const sourceStats = await stat(resolvedPath);
+  const title = getStringOption(options, "title");
+
+  let fileBytes: Uint8Array;
+  let fileName: string;
+  let mimeType: string | undefined;
+
+  if (sourceStats.isDirectory()) {
+    if (title) {
+      usageError(
+        "Title overrides are not supported for Obsidian vault imports.",
+        "documents import",
+      );
+    }
+
+    const zippedVault = await zipVaultDirectory(resolvedPath);
+    fileBytes = zippedVault.bytes;
+    fileName = zippedVault.fileName;
+    mimeType = "application/zip";
+  } else {
+    fileBytes = await readFile(resolvedPath);
+    fileName = path.basename(resolvedPath);
+    mimeType = getImportMimeType(fileName);
+    if (mimeType === "application/zip" && title) {
+      usageError(
+        "Title overrides are not supported for Obsidian vault imports.",
+        "documents import",
+      );
+    }
+  }
+
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new Blob([Buffer.from(fileBytes)], {
+      ...(mimeType ? { type: mimeType } : {}),
+    }),
+    fileName,
+  );
+
+  if (title) {
+    formData.append("title", title);
+  }
+
+  const result = (await authorizedFetch(
+    ctx,
+    `${ctx.apiBaseUrl}/api/public/v1/documents/import`,
+    {
+      method: "POST",
+      body: formData,
+    },
+  )) as DocumentImportPayload;
+
+  renderText(ctx, formatDocumentImportText(result), result);
+};
+
+const commentsList = async (
+  ctx: CommandContext,
+  _args: string[],
+  options: Record<string, OptionValue>,
+) => {
+  const documentRef = getStringOption(options, "document");
+  if (!documentRef) {
+    usageError("Document ID or URL is required.", "comments list");
+  }
+
+  const documentId = resolveDocumentRef(
+    documentRef ?? usageError("Document ID or URL is required.", "comments list"),
+  );
+  const url = new URL(`${ctx.apiBaseUrl}/api/public/v1/documents/${documentId}/comments`);
+  const result = (await authorizedFetch(ctx, url.toString())) as DocumentCommentsPayload;
+  renderText(ctx, formatCommentsListText(result), result);
+};
+
+const commentsCreate = async (
+  ctx: CommandContext,
+  _args: string[],
+  options: Record<string, OptionValue>,
+) => {
+  const documentRef = getStringOption(options, "document");
+  if (!documentRef) {
+    usageError("Document ID or URL is required.", "comments create");
+  }
+
+  if (options.stdin === true && typeof options.text === "string") {
+    usageError("Use either `--text` or `--stdin`, not both.", "comments create");
+  }
+
+  const stdinText = options.stdin === true ? await readStdin() : undefined;
+  const text = stdinText ?? getStringOption(options, "text");
+  if (!text) {
+    usageError("Comment text is required. Pass `--text` or `--stdin`.", "comments create");
+  }
+
+  const payload = {
+    document: resolveDocumentRef(
+      documentRef ?? usageError("Document ID or URL is required.", "comments create"),
+    ),
+    text:
+      text ??
+      usageError("Comment text is required. Pass `--text` or `--stdin`.", "comments create"),
+    authorMode: parseAuthorMode(getStringOption(options, "author-mode")),
+    ...(typeof options["author-label"] === "string"
+      ? { authorLabel: options["author-label"] }
+      : {}),
+  };
+
+  const result = (await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/comments`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })) as CommentMutationPayload;
+
+  renderText(ctx, formatCommentMutationText(result), result);
+};
+
+const commentsReply = async (
+  ctx: CommandContext,
+  _args: string[],
+  options: Record<string, OptionValue>,
+) => {
+  const commentId = getStringOption(options, "comment");
+  if (!commentId) {
+    usageError("Parent comment id is required.", "comments reply");
+  }
+
+  if (options.stdin === true && typeof options.text === "string") {
+    usageError("Use either `--text` or `--stdin`, not both.", "comments reply");
+  }
+
+  const stdinText = options.stdin === true ? await readStdin() : undefined;
+  const text = stdinText ?? getStringOption(options, "text");
+  if (!text) {
+    usageError("Reply text is required. Pass `--text` or `--stdin`.", "comments reply");
+  }
+
+  const payload = {
+    commentId: commentId ?? usageError("Parent comment id is required.", "comments reply"),
+    text:
+      text ?? usageError("Reply text is required. Pass `--text` or `--stdin`.", "comments reply"),
+    authorMode: parseAuthorMode(getStringOption(options, "author-mode")),
+    ...(typeof options["author-label"] === "string"
+      ? { authorLabel: options["author-label"] }
+      : {}),
+  };
+
+  const result = (await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/comments/reply`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })) as CommentMutationPayload;
+
+  renderText(ctx, formatCommentMutationText(result), result);
+};
+
+const commentsResolve = async (
+  ctx: CommandContext,
+  _args: string[],
+  options: Record<string, OptionValue>,
+) => {
+  const threadId = getStringOption(options, "thread");
+  if (!threadId) {
+    usageError("Thread id is required.", "comments resolve");
+  }
+
+  const payload = {
+    threadId: threadId ?? usageError("Thread id is required.", "comments resolve"),
+    resolved: options.open !== true,
+  };
+
+  const result = (await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/comments/resolve`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })) as CommentMutationPayload;
+
+  renderText(ctx, formatCommentMutationText(result), result);
 };
 
 const documentsEdit = async (
@@ -1636,6 +2482,11 @@ const parseCli = (argv: string[]): ParsedCli => {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const unknownOptionMatch = message.match(/Unknown option '--([^']+)'/);
+    if (unknownOptionMatch?.[1]) {
+      throw new Error(buildUnknownOptionError(argv, unknownOptionMatch[1]));
+    }
+
     throw new Error(`${message}\n\n${ROOT_HELP}`);
   }
 };
@@ -1658,7 +2509,9 @@ const main = async () => {
 
   if (options.help === true || command === "help" || !command) {
     if (!helpKey) {
-      throw new Error(`Unknown command: ${positionals.join(" ")}\n\n${ROOT_HELP}`);
+      throw new Error(
+        buildUnknownCommandError(command === "help" ? positionals.slice(1) : positionals),
+      );
     }
 
     render(ctx, formatHelp(helpKey));
@@ -1666,12 +2519,17 @@ const main = async () => {
   }
 
   if (!helpKey) {
-    throw new Error(`Unknown command: ${positionals.join(" ")}\n\n${ROOT_HELP}`);
+    throw new Error(buildUnknownCommandError(positionals));
   }
 
   validateAllowedOptions(helpKey, options);
 
-  if (helpKey === "auth" || helpKey === "workspaces" || helpKey === "documents") {
+  if (
+    helpKey === "auth" ||
+    helpKey === "workspaces" ||
+    helpKey === "documents" ||
+    helpKey === "comments"
+  ) {
     render(ctx, formatHelp(helpKey));
     return;
   }
@@ -1718,6 +2576,11 @@ const main = async () => {
     return;
   }
 
+  if (command === "documents" && subcommand === "import") {
+    await documentsImport(ctx, rest, options);
+    return;
+  }
+
   if (command === "documents" && subcommand === "edit") {
     await documentsEdit(ctx, rest, options);
     return;
@@ -1733,6 +2596,26 @@ const main = async () => {
     return;
   }
 
+  if (command === "comments" && subcommand === "list") {
+    await commentsList(ctx, rest, options);
+    return;
+  }
+
+  if (command === "comments" && subcommand === "create") {
+    await commentsCreate(ctx, rest, options);
+    return;
+  }
+
+  if (command === "comments" && subcommand === "reply") {
+    await commentsReply(ctx, rest, options);
+    return;
+  }
+
+  if (command === "comments" && subcommand === "resolve") {
+    await commentsResolve(ctx, rest, options);
+    return;
+  }
+
   if (command === "search") {
     await search(
       ctx,
@@ -1744,7 +2627,7 @@ const main = async () => {
     return;
   }
 
-  throw new Error(`Unknown command: ${positionals.join(" ")}\n\n${ROOT_HELP}`);
+  throw new Error(buildUnknownCommandError(positionals));
 };
 
 await main().catch((error) => {
