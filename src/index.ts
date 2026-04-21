@@ -1,15 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import {
-  chmod,
-  mkdir,
-  readdir,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -465,9 +457,7 @@ const HELP_SECTIONS: Record<HelpKey, HelpSection> = {
   "documents import": {
     description:
       "Import one local DOCX, ODT, Markdown, or text file, or import an Obsidian vault ZIP or directory.",
-    usage: [
-      "nylio documents import <path-to-file-or-vault> [--title <title>]",
-    ],
+    usage: ["nylio documents import <path-to-file-or-vault> [--title <title>]"],
     options: [
       {
         flag: "--title <title>",
@@ -1597,11 +1587,7 @@ const formatDocumentImportText = (payload: DocumentImportPayload) =>
           ? [
               formatTable(
                 ["id", "kind", "title"],
-                payload.documents.map((document) => [
-                  document.id,
-                  document.kind,
-                  document.title,
-                ]),
+                payload.documents.map((document) => [document.id, document.kind, document.title]),
                 [28, 12, 64],
               ),
             ]
@@ -1770,9 +1756,7 @@ const zipVaultDirectory = async (
 
     for (const entry of entries) {
       const absoluteChildPath = path.join(currentPath, entry.name);
-      const relativeChildPath = relativePath
-        ? path.join(relativePath, entry.name)
-        : entry.name;
+      const relativeChildPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
 
       if (entry.isSymbolicLink()) {
         continue;
@@ -1787,10 +1771,7 @@ const zipVaultDirectory = async (
         continue;
       }
 
-      zip.file(
-        normalizeVaultZipPath(relativeChildPath),
-        await readFile(absoluteChildPath),
-      );
+      zip.file(normalizeVaultZipPath(relativeChildPath), await readFile(absoluteChildPath));
     }
   };
 
@@ -2059,14 +2040,10 @@ const documentsImport = async (
     formData.append("title", title);
   }
 
-  const result = (await authorizedFetch(
-    ctx,
-    `${ctx.apiBaseUrl}/api/public/v1/documents/import`,
-    {
-      method: "POST",
-      body: formData,
-    },
-  )) as DocumentImportPayload;
+  const result = (await authorizedFetch(ctx, `${ctx.apiBaseUrl}/api/public/v1/documents/import`, {
+    method: "POST",
+    body: formData,
+  })) as DocumentImportPayload;
 
   renderText(ctx, formatDocumentImportText(result), result);
 };

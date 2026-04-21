@@ -64,11 +64,11 @@ The publish safety check fails if the CLI imports server-only code, workspace-in
 
 ## Publish
 
-GitHub Actions publishes the package from the `Publish CLI` workflow when you push a tag in the format `nylio-cli-v<version>`, for example:
+GitHub Actions publishes the package from the `Publish CLI` workflow when you push a tag in the format `v<version>`, for example:
 
 ```bash
-git tag nylio-cli-v0.1.0
-git push origin nylio-cli-v0.1.0
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 That same workflow also creates a GitHub Release for the tag and uploads:

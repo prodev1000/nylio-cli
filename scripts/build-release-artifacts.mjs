@@ -84,7 +84,7 @@ const main = async () => {
   const { repo, tag } = parseArgs(process.argv.slice(2));
   const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
   const version = packageJson.version;
-  const expectedTag = `nylio-cli-v${version}`;
+  const expectedTag = `v${version}`;
 
   if (!repo) {
     throw new Error("Missing --repo <owner/repo> or GITHUB_REPOSITORY.");
